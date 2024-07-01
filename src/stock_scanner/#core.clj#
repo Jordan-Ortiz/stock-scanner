@@ -1,0 +1,125 @@
+(ns stock-scanner.core
+  (:gen-class)
+  (:require [clj-http.client :as http]
+  	    [cheshire.core :as json]
+	    [clojure.java.io :as io]
+	    [clojure.string :as str]
+	    [clojure.walk :as walk]))
+
+(def test-sample-data
+  {"a" {"nested-a" 1}
+   "b" {"nested-b" {"nested-b1" 2}}
+   "c" nil
+   "d" {"nested-d" {"nested-d1" nil}}})
+
+
+(def api-token (get ["demo"  "3W958IRRXHKGYH00" "KIDX7FQ0BGYBXIMH"] 1))
+(def base-url "https://www.alphavantage.co/")
+(def query  {
+     	   :function "TIME_SERIES_INTRADAY"
+	   :symbol "IBM"
+	   :interval "5min"
+	   :apikey api-token
+	   :outputsize "compact"
+	   :datatype "json"
+})
+
+(def url-endpoint (str base-url "query?" (str/join "&" (map (fn [[k v]] (str (name k) "=" v)) query ))))
+
+
+(defn change-key-names
+      [json-map]
+      (map (fn [[k v]] json-map))
+)
+
+(defn make-json-file
+     [data filename]
+     (let [json-str (json/generate-string data)]
+     (try
+	(spit (str "resources/" filename) json-str) ; create file
+	(println "Successfully wrote Json data to " filename)
+	(catch Exception e
+	(println (str "Failed to create " filename ": " (ex-message e) (ex-data e)))))))
+
+(defn check-if-file-exist
+      [filename]
+      (.exists (io/file (str "resources/" filename))))
+
+(defn get-file
+      [filename]
+      (let [json-str (slurp (str "resources/" filename))]
+      (json/parse-string json-str)))
+
+(defn no-nested-value?
+      [value]
+      (not(and value (coll? (vals value))))) ; check if not a collection it doesn't have a nested value
+
+
+(defn get-stats
+      [time-series]
+      (let [key-stats (keys (last (first time-series)))
+      	   stats      (fn [data]
+	   	      (do  {:avg (/ (+ open)(count data))
+	   	      	   :max (apply max data)
+			   :min (apply min data)
+			   })) 
+      	   open       (map (fn [[_ stats]] (parse-double (get stats (nth key-stats 0)))) time-series)
+      	   high       (map (fn [[_ stats]] (parse-double (get stats (nth key-stats 1)))) time-series)
+	   low        (map (fn [[_ stats]] (parse-double (get stats (nth key-stats 2)))) time-series)
+	   close      (map (fn [[_ stats]] (parse-double (get stats (nth key-stats 3)))) time-series)
+	   volume     (map (fn [[_ stats]] (parse-double (get stats (nth key-stats 4)))) time-series)
+	   open-stats {:avg (/ (+ open)(count open)) :max (apply max open) :min (apply min open) }
+	   stock-stats {:open 	{:data open :stats open-stats}
+	   	        :high 	high
+			:low 	low
+			:close 	close
+			:volume volume
+	   	       }
+	   ]
+	   stock-stats
+      
+      ))
+
+(defn clean-data-up
+      [data-set]
+      (let [meta-data (get data-set "Meta Data")
+      symbol (get meta-data "2. Symbol")
+      time-zone (get meta-data "6. Time Zone")
+      time-series (get data-set "Time Series (5min)")
+      timestamps (sort (keys time-series))
+      time-range {:start (first timestamps) :end (last timestamps)}
+      stats	 (get-stats time-series)
+      stock-info {:symbol	symbol
+      		  :time-series 	time-series
+		  :timestamps	timestamps
+		  :time-range 	time-range
+		  :stats	stats
+      		 }
+      ]
+      stock-info))
+
+(defn get-meta-data
+      [data-set]
+     (do (map (fn [[k v]]
+      (if (no-nested-value? v)
+      (println k "no-nested-values: " v)
+      (do      (map (fn [[nested-k nested-v]] 
+      (if (no-nested-value? nested-v)
+      (println "no-nested-values: " nested-k)
+      (println nested-k  "has nested-values: " nested-v)
+      ))v )))
+      ) data-set)))
+      
+
+(defn -main
+  "return the url-endpoint"
+  [filename & args]
+  (if (check-if-file-exist filename)
+  (let [data (get-file filename)]
+   (get-meta-data data))
+  (let [
+  response (http/get url-endpoint {:as :json})
+  json-body (:body response)]
+  (make-json-file json-body filename)
+  )))
+
